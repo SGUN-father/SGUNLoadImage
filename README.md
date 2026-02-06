@@ -17,7 +17,7 @@
   - **Pad**：等比例缩放并填充黑边。
 - 🔄 **智能重采样**：内置多种缩放算法（Nearest, Bilinear, Bicubic, Lanczos 等），确保画质清晰。
 - 🧩 **高度集成**：单节点完成“加载+调整+遮罩”全流程，极大简化了工作流布局。
-<img width="1954" height="1354" alt="93bd756b-8fce-4b7d-926a-e9df275bfe4e" src="https://github.com/user-attachments/assets/3aae04bb-fec5-4179-b905-eb6c66b4d96a" />
+<img width="1736" height="1436" alt="78d6b1b2-d857-4732-8dd9-cc0c05b8f223" src="https://github.com/user-attachments/assets/c6e843e1-437c-4135-8955-fdc5f58930fe" />
 <img width="1596" height="1112" alt="4dc37c57-b62f-4ea0-a21a-10d1203a30aa" src="https://github.com/user-attachments/assets/d150300e-806f-4c50-9898-f996c96f918c" />
 
 ## 安装方法
