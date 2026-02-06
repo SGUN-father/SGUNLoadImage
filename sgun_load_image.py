@@ -4,6 +4,8 @@ import numpy as np
 import hashlib
 from PIL import Image, ImageOps, ImageSequence
 import folder_paths
+import zipfile
+import io
 
 class SGUNLoadImage:
     @classmethod
@@ -12,7 +14,9 @@ class SGUNLoadImage:
         files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
         return {
             "required": {
+                "mode": (["single", "batch"], {"default": "single"}),
                 "image": (sorted(files), {"image_upload": True}),
+                "batch_path": ("STRING", {"default": ""}),
                 "width": ("INT", {"default": 720, "min": 1, "max": 8192, "step": 1}),
                 "height": ("INT", {"default": 1280, "min": 1, "max": 8192, "step": 1}),
                 "upscale_method": (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"],),
@@ -31,13 +35,10 @@ class SGUNLoadImage:
     CATEGORY = "image"
     TITLE = "SGUNLoadImage"
 
-    def load_image(self, image, width, height, upscale_method, keep_proportion, crop_position, divisible_by, mask_data=""):
+    def load_image(self, mode, image, batch_path, width, height, upscale_method, keep_proportion, crop_position, divisible_by, mask_data=""):
         # Ensure dimensions are divisible
         width = (width // divisible_by) * divisible_by
         height = (height // divisible_by) * divisible_by
-
-        image_path = folder_paths.get_annotated_filepath(image)
-        img = Image.open(image_path)
         
         # Mapping upscale methods to PIL Resampling filters
         resample_map = {
@@ -49,15 +50,42 @@ class SGUNLoadImage:
         }
         resample = resample_map.get(upscale_method, Image.BICUBIC)
 
-        # Handle external mask from frontend (brush data)
+        images_to_load = []
+        if mode == "single":
+            image_path = folder_paths.get_annotated_filepath(image)
+            images_to_load.append(("path", image_path))
+        else:
+            if not batch_path:
+                raise Exception("Batch path is empty")
+            
+            # Normalize path
+            batch_path = batch_path.strip().strip('"')
+            
+            if os.path.isdir(batch_path):
+                for f in sorted(os.listdir(batch_path)):
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                        images_to_load.append(("path", os.path.join(batch_path, f)))
+            elif zipfile.is_zipfile(batch_path):
+                with zipfile.ZipFile(batch_path, 'r') as z:
+                    for f in sorted(z.namelist()):
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                            # We'll read the data later to keep the handle open only when needed
+                            # or just read it now if it's not too many. 
+                            # For safety, let's store the name and we'll re-open zip in the loop.
+                            images_to_load.append(("zip", (batch_path, f)))
+            else:
+                raise Exception(f"Invalid batch path: {batch_path}. Must be a directory or zip file.")
+
+        if not images_to_load:
+            raise Exception("No images found to load.")
+
+        # Handle external mask from frontend (brush data) - ONLY for single mode
         external_mask = None
-        if mask_data:
+        if mode == "single" and mask_data:
             try:
                 mask_path = folder_paths.get_annotated_filepath(mask_data)
                 if os.path.exists(mask_path):
                     mask_img = Image.open(mask_path)
-                    # The frontend sends a transparent PNG with red/colored strokes.
-                    # We use the alpha channel as the mask.
                     if "A" in mask_img.getbands():
                         external_mask = np.array(mask_img.getchannel("A")).astype(np.float32) / 255.0
                     else:
@@ -68,49 +96,54 @@ class SGUNLoadImage:
         output_images = []
         output_masks = []
         
-        for i in ImageSequence.Iterator(img):
-            i = ImageOps.exif_transpose(i)
-            if i.mode == 'I':
-                i = i.point(lambda i: i * (1 / 255))
-            
-            # 1. Prepare Image
-            image_rgb = i.convert("RGB")
-            
-            # 2. Prepare Mask
-            # Priority: 1. External mask (from brush) 2. Alpha channel of image 3. Zero mask
-            if external_mask is not None:
-                # Resize external mask to match current frame size before processing
-                current_mask_pil = Image.fromarray((external_mask * 255).astype(np.uint8), mode='L')
-                if current_mask_pil.size != image_rgb.size:
-                    current_mask_pil = current_mask_pil.resize(image_rgb.size, resample=Image.BILINEAR)
-            elif "A" in i.getbands():
-                # Standard ComfyUI: 1.0 is mask (black in alpha), 0.0 is background (white in alpha).
-                alpha = np.array(i.getchannel("A")).astype(np.float32) / 255.0
-                current_mask_pil = Image.fromarray(((1.0 - alpha) * 255).astype(np.uint8), mode='L')
-            else:
-                current_mask_pil = Image.new("L", image_rgb.size, 0)
+        for img_type, img_info in images_to_load:
+            if img_type == "path":
+                img = Image.open(img_info)
+            else: # zip
+                z_path, z_file = img_info
+                with zipfile.ZipFile(z_path, 'r') as z:
+                    with z.open(z_file) as f:
+                        img = Image.open(io.BytesIO(f.read()))
 
-            # 3. Consistent Resize for both Image and Mask
-            image_rgb, current_mask_pil = self.apply_resize(
-                image_rgb, current_mask_pil, width, height, resample, keep_proportion, crop_position
-            )
-            
-            # 4. Convert to Tensors
-            image_tensor = np.array(image_rgb).astype(np.float32) / 255.0
-            image_tensor = torch.from_numpy(image_tensor)[None,]
-            
-            mask_tensor = np.array(current_mask_pil).astype(np.float32) / 255.0
-            mask_tensor = torch.from_numpy(mask_tensor)[None,]
+            for i in ImageSequence.Iterator(img):
+                i = ImageOps.exif_transpose(i)
+                if i.mode == 'I':
+                    i = i.point(lambda i: i * (1 / 255))
+                
+                # 1. Prepare Image
+                image_rgb = i.convert("RGB")
+                
+                # 2. Prepare Mask
+                if external_mask is not None:
+                    current_mask_pil = Image.fromarray((external_mask * 255).astype(np.uint8), mode='L')
+                    if current_mask_pil.size != image_rgb.size:
+                        current_mask_pil = current_mask_pil.resize(image_rgb.size, resample=Image.BILINEAR)
+                elif "A" in i.getbands():
+                    alpha = np.array(i.getchannel("A")).astype(np.float32) / 255.0
+                    current_mask_pil = Image.fromarray(((1.0 - alpha) * 255).astype(np.uint8), mode='L')
+                else:
+                    current_mask_pil = Image.new("L", image_rgb.size, 0)
 
-            output_images.append(image_tensor)
-            output_masks.append(mask_tensor)
+                # 3. Consistent Resize for both Image and Mask
+                image_rgb, current_mask_pil = self.apply_resize(
+                    image_rgb, current_mask_pil, width, height, resample, keep_proportion, crop_position
+                )
+                
+                # 4. Convert to Tensors
+                image_tensor = np.array(image_rgb).astype(np.float32) / 255.0
+                image_tensor = torch.from_numpy(image_tensor)[None,]
+                
+                mask_tensor = np.array(current_mask_pil).astype(np.float32) / 255.0
+                mask_tensor = torch.from_numpy(mask_tensor)[None,]
 
-        if len(output_images) > 1:
-            output_image = torch.cat(output_images, dim=0)
-            output_mask = torch.cat(output_masks, dim=0)
-        else:
-            output_image = output_images[0]
-            output_mask = output_masks[0]
+                output_images.append(image_tensor)
+                output_masks.append(mask_tensor)
+
+        if not output_images:
+            raise Exception("No valid images processed.")
+
+        output_image = torch.cat(output_images, dim=0)
+        output_mask = torch.cat(output_masks, dim=0)
 
         return (output_image, output_mask, width, height)
 
@@ -170,17 +203,30 @@ class SGUNLoadImage:
         return image, mask
 
     @classmethod
-    def IS_CHANGED(s, image, mask_data="", **kwargs):
-        image_path = folder_paths.get_annotated_filepath(image)
+    def IS_CHANGED(s, mode, image, batch_path, mask_data="", **kwargs):
         m = hashlib.sha256()
-        with open(image_path, 'rb') as f:
-            m.update(f.read())
-        if mask_data:
-            m.update(mask_data.encode())
+        if mode == "single":
+            image_path = folder_paths.get_annotated_filepath(image)
+            if os.path.exists(image_path):
+                with open(image_path, 'rb') as f:
+                    m.update(f.read())
+            if mask_data:
+                m.update(mask_data.encode())
+        else:
+            m.update(batch_path.encode())
+            if os.path.exists(batch_path):
+                # Use modification time to detect changes in the folder/zip
+                m.update(str(os.path.getmtime(batch_path)).encode())
         return m.digest().hex()
 
     @classmethod
-    def VALIDATE_INPUTS(s, image, **kwargs):
-        if not folder_paths.exists_annotated_filepath(image):
-            return "Invalid image file: {}".format(image)
+    def VALIDATE_INPUTS(s, mode, image, batch_path, **kwargs):
+        if mode == "single":
+            if not folder_paths.exists_annotated_filepath(image):
+                return "Invalid image file: {}".format(image)
+        else:
+            if not batch_path:
+                return "Batch path is required for batch mode."
+            if not os.path.exists(batch_path):
+                return "Batch path does not exist: {}".format(batch_path)
         return True

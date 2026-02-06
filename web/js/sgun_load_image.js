@@ -44,6 +44,10 @@ class ImageBrushWidget {
             width = this.widgetWidth || 450;
         }
 
+        if (this.mode === "batch") {
+            return [width, 0];
+        }
+
         // Fix for text overlap: Add top padding
         const topPadding = 20;
 
@@ -60,13 +64,18 @@ class ImageBrushWidget {
     }
 
     draw(ctx, node, widget_width, y, widget_height) {
+        // Get current mode
+        const modeWidget = node.widgets.find(w => w.name === "mode");
+        this.mode = modeWidget ? modeWidget.value : "single";
+
+        if (this.mode === "batch") {
+            return;
+        }
+
         const topY = y;
         this.widgetTopY = topY;
         
         // Dynamic Height Logic:
-        // 1. Calculate the available space in the node (Node Height - Current Y - Footer/Margin)
-        // 2. Use the LARGER of (allocated widget_height) and (available space)
-        // This ensures that if the node is huge, the widget fills it, fixing the "Tiny Image" issue.
         const availableHeight = node.size[1] - y - 10; // 10 buffer
         this.widgetHeight = Math.max(widget_height, availableHeight);
         
@@ -87,6 +96,7 @@ class ImageBrushWidget {
         
         ctx.beginPath();
 
+        // --- Single Mode UI (Normal) ---
         // 1. Draw Toolbar
         const toolbarY = topY + topPadding;
         ctx.shadowColor = "rgba(0,0,0,0.5)";
@@ -216,6 +226,8 @@ class ImageBrushWidget {
     }
 
     mouse(event, pos, node) {
+        if (this.mode === "batch") return false;
+        
         const [x, y] = pos;
         if (this.widgetTopY === undefined || this.widgetHeight === undefined) return false;
         const localY = y - this.widgetTopY;
@@ -509,7 +521,7 @@ app.registerExtension({
 
             // 1. Cleanup Redundant Widgets (ComfyUI internal preview)
             setTimeout(() => {
-                const keep = ["image", "width", "height", "upscale_method", "keep_proportion", "crop_position", "divisible_by", "mask_data"];
+                const keep = ["mode", "image", "batch_path", "width", "height", "upscale_method", "keep_proportion", "crop_position", "divisible_by", "mask_data"];
                 this.widgets = this.widgets.filter(w => keep.includes(w.name));
                 
                 // 2. Add our custom ImageBrushWidget
@@ -517,37 +529,63 @@ app.registerExtension({
                 this.addCustomWidget(brushWidget);
                 this.brushWidget = brushWidget;
                 
-                // 3. Initial Load
+                // 3. Setup Mode Toggle
+                const modeWidget = this.widgets.find(w => w.name === "mode");
                 const imageWidget = this.widgets.find(w => w.name === "image");
-                if (imageWidget) {
-                    // Prevent standard image widget from taking huge space, but reserve space for filename text
-                    // 20px is standard height for text widgets. 
-                    imageWidget.computeSize = () => [0, 26]; 
+                const batchPathWidget = this.widgets.find(w => w.name === "batch_path");
+                
+                const imageWidgetType = imageWidget.type;
+                const batchPathWidgetType = batchPathWidget.type;
+                
+                const updateVisibility = () => {
+                    const isBatch = modeWidget.value === "batch";
+                    brushWidget.mode = modeWidget.value; // Sync mode to brush widget
+
+                    if (isBatch) {
+                        imageWidget.type = "hidden";
+                        batchPathWidget.type = batchPathWidgetType;
+                    } else {
+                        imageWidget.type = imageWidgetType;
+                        batchPathWidget.type = "hidden";
+                    }
                     
+                    // Force node to recalculate its size based on new widget visibility and mode
+                    this.setSize(this.computeSize());
+                    this.setDirtyCanvas(true, true);
+                };
+
+                if (modeWidget) {
+                    modeWidget.callback = () => {
+                        updateVisibility();
+                    };
+                }
+
+                // 4. Initial Load & Setup for Image Widget
+                if (imageWidget) {
+                    imageWidget.computeSize = () => [0, 26]; 
                     const originalCallback = imageWidget.callback;
                     imageWidget.callback = (v) => {
                         if (originalCallback) originalCallback.apply(imageWidget, [v]);
-                        // Completely clear images to prevent default drawing
                         this.imgs = null;
                         this.images = null;
-                        brushWidget.onImageChanged(v, true); // true = reset mask
+                        brushWidget.onImageChanged(v, true);
                     };
                     if (imageWidget.value) {
                         this.imgs = null;
                         this.images = null;
-                        brushWidget.onImageChanged(imageWidget.value, false); // false = don't reset mask (load from workflow)
+                        brushWidget.onImageChanged(imageWidget.value, false);
                     }
                 }
 
-                // 4. Hide mask_data widget completely
+                // 5. Hide mask_data widget
                 const maskWidget = this.widgets.find(w => w.name === "mask_data");
                 if (maskWidget) {
                     maskWidget.type = "hidden";
                     maskWidget.computeSize = () => [0, -4]; 
-                    maskWidget.draw = () => {}; // Never draw it
+                    maskWidget.draw = () => {};
                 }
                 
-                // Force initial resize
+                updateVisibility();
                 this.onResize?.(this.size);
                 this.setDirtyCanvas(true, true);
             }, 100);
