@@ -21,6 +21,7 @@ class ImageBrushWidget {
         this.brushSize = 80;
         this.brushOpacity = 0.5;
         this.isEraser = false;
+        this.isFilling = false;
         this.isDrawing = false;
         this.lastMousePos = null;
         this.history = [];
@@ -117,6 +118,7 @@ class ImageBrushWidget {
             { label: "Clear", id: "clear" },
             { label: "Undo", id: "undo" },
             { label: "Eraser", id: "eraser" },
+            { label: "Fill", id: "fill" },
             { label: "Brush", id: "brush" }
         ];
         const btnW = (drawWidth - 10) / btns.length;
@@ -125,7 +127,9 @@ class ImageBrushWidget {
 
         btns.forEach((btn, i) => {
             const bx = this.margin + 5 + i * btnW;
-            const isSelected = (btn.id === "brush" && !this.isEraser) || (btn.id === "eraser" && this.isEraser);
+            const isSelected = (btn.id === "brush" && !this.isEraser && !this.isFilling) || 
+                               (btn.id === "eraser" && this.isEraser) ||
+                               (btn.id === "fill" && this.isFilling);
             
             ctx.fillStyle = isSelected ? "#4a90e2" : "#333";
             ctx.beginPath();
@@ -239,18 +243,20 @@ class ImageBrushWidget {
         if (localY < this.toolbarHeight + topPadding) {
             if (event.type === "pointerdown" || event.type === "mousedown") {
                 const drawWidth = (this.widgetWidth || node.size[0]) - this.margin * 2;
-                const btnW = (drawWidth - 10) / 5;
+                const btnsCount = 6;
+                const btnW = (drawWidth - 10) / btnsCount;
                 const btnY = 6 + topPadding;
                 const btnX0 = this.margin + 5;
                 
                 // Button Detection
-                if (localY >= btnY && localY <= btnY + 24 && x >= btnX0 && x <= btnX0 + btnW * 5) {
+                if (localY >= btnY && localY <= btnY + 24 && x >= btnX0 && x <= btnX0 + btnW * btnsCount) {
                     const idx = Math.floor((x - btnX0) / btnW);
-                    if (idx === 0) this.uploadImage();
-                    else if (idx === 1) this.clear();
-                    else if (idx === 2) this.undo();
-                    else if (idx === 3) this.isEraser = true;
-                    else if (idx === 4) this.isEraser = false;
+                    if (idx === 0) { console.log("[SGUNLoadImage] Action: Load Image"); this.uploadImage(); }
+                    else if (idx === 1) { console.log("[SGUNLoadImage] Action: Clear Mask"); this.clear(); }
+                    else if (idx === 2) { console.log("[SGUNLoadImage] Action: Undo"); this.undo(); }
+                    else if (idx === 3) { console.log("[SGUNLoadImage] Tool: Eraser"); this.isEraser = true; this.isFilling = false; }
+                    else if (idx === 4) { console.log("[SGUNLoadImage] Tool: Fill"); this.isEraser = false; this.isFilling = true; }
+                    else if (idx === 5) { console.log("[SGUNLoadImage] Tool: Brush"); this.isEraser = false; this.isFilling = false; }
                     node.setDirtyCanvas(true, true);
                     return true;
                 }
@@ -289,14 +295,21 @@ class ImageBrushWidget {
 
             if (event.type === "pointerdown" || event.type === "mousedown") {
                 if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) {
-                    this.isDrawing = true;
-                    this.saveHistory();
-                    this.drawAt(imgX, imgY);
-                    this.lastMousePos = [imgX, imgY];
+                    if (this.isFilling) {
+                        this.saveHistory();
+                        this.floodFill(Math.round(imgX), Math.round(imgY));
+                        this.uploadMask();
+                        node.setDirtyCanvas(true, true);
+                    } else {
+                        this.isDrawing = true;
+                        this.saveHistory();
+                        this.drawAt(imgX, imgY);
+                        this.lastMousePos = [imgX, imgY];
+                    }
                     return true;
                 }
             } else if (event.type === "pointermove" || event.type === "mousemove") {
-                if (this.isDrawing) {
+                if (this.isDrawing && !this.isFilling) {
                     this.drawAt(imgX, imgY, this.lastMousePos);
                     this.lastMousePos = [imgX, imgY];
                     node.setDirtyCanvas(true, true);
@@ -337,6 +350,89 @@ class ImageBrushWidget {
         ctx.stroke();
     }
 
+    floodFill(startX, startY) {
+        console.log(`[SGUNLoadImage] FloodFill started at (${startX}, ${startY}) with improved boundary logic`);
+        const startTime = performance.now();
+        const ctx = this.drawingCtx;
+        const width = this.drawingCanvas.width;
+        const height = this.drawingCanvas.height;
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+
+        const i = (startY * width + startX) * 4;
+        const targetR = data[i];
+        const targetG = data[i+1];
+        const targetB = data[i+2];
+
+        // Strict boundary threshold. Only stop at very bright pixels.
+        // This allows the fill to pass through semi-transparent anti-aliased edges.
+        const boundaryThreshold = 250; 
+
+        if (targetR >= boundaryThreshold && targetG >= boundaryThreshold && targetB >= boundaryThreshold) {
+            console.log("[SGUNLoadImage] FloodFill: Clicked on a boundary. Skipping.");
+            return;
+        }
+
+        let pixelsFilled = 0;
+        const stack = [startX, startY];
+        const visited = new Uint8Array(width * height);
+        const filledPixels = []; // Store filled pixels for dilation
+        
+        while (stack.length > 0) {
+            const y = stack.pop();
+            const x = stack.pop();
+            
+            const pos = y * width + x;
+            if (visited[pos]) continue;
+            visited[pos] = 1;
+
+            const idx = pos * 4;
+            const isBoundary = data[idx] >= boundaryThreshold && data[idx+1] >= boundaryThreshold && data[idx+2] >= boundaryThreshold;
+            
+            // We fill BOTH background and boundary pixels to ensure no gaps,
+            // but we only continue recursion for NON-boundary pixels.
+            data[idx] = 255;
+            data[idx+1] = 255;
+            data[idx+2] = 255;
+            data[idx+3] = 255;
+            pixelsFilled++;
+            filledPixels.push(x, y);
+
+            if (!isBoundary) {
+                if (x > 0) { stack.push(x - 1); stack.push(y); }
+                if (x < width - 1) { stack.push(x + 1); stack.push(y); }
+                if (y > 0) { stack.push(x); stack.push(y - 1); }
+                if (y < height - 1) { stack.push(x); stack.push(y + 1); }
+            }
+        }
+
+        // Post-process: 1px Dilation to swallow any remaining sub-pixel gaps
+        // We only dilate the newly filled pixels to avoid corrupting the whole mask
+        const dilationBuffer = new Int32Array(filledPixels.length);
+        for (let j = 0; j < filledPixels.length; j += 2) {
+            const fx = filledPixels[j];
+            const fy = filledPixels[j+1];
+            
+            const neighbors = [
+                [fx-1, fy], [fx+1, fy], [fx, fy-1], [fx, fy+1]
+            ];
+            
+            for (const [nx, ny] of neighbors) {
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                    const nIdx = (ny * width + nx) * 4;
+                    data[nIdx] = 255;
+                    data[nIdx+1] = 255;
+                    data[nIdx+2] = 255;
+                    data[nIdx+3] = 255;
+                }
+            }
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        const endTime = performance.now();
+        console.log(`[SGUNLoadImage] FloodFill completed. Pixels filled: ${pixelsFilled}, Time: ${(endTime - startTime).toFixed(2)}ms`);
+    }
+
     saveHistory() {
         this.history.push(this.drawingCanvas.toDataURL());
         if (this.history.length > 20) this.history.shift();
@@ -345,6 +441,7 @@ class ImageBrushWidget {
     undo() {
         if (this.history.length > 0) {
             const last = this.history.pop();
+            console.log(`[SGUNLoadImage] Undo: Restoring from history (remaining: ${this.history.length})`);
             const tempImg = new Image();
             tempImg.onload = () => {
                 this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
@@ -353,6 +450,8 @@ class ImageBrushWidget {
                 this.uploadMask();
             };
             tempImg.src = last;
+        } else {
+            console.log("[SGUNLoadImage] Undo: No history to restore.");
         }
     }
 
@@ -410,6 +509,7 @@ class ImageBrushWidget {
             this.node.setDirtyCanvas(true, true);
         };
         this.img.onload = () => {
+            console.log(`[SGUNLoadImage] Image loaded: ${this.img.width}x${this.img.height}`);
             // Reset canvas size to match new image
             this.drawingCanvas.width = this.img.width;
             this.drawingCanvas.height = this.img.height;
@@ -468,22 +568,28 @@ class ImageBrushWidget {
 
     async uploadMask() {
         if (!this.drawingCanvas.width) return;
+        console.log("[SGUNLoadImage] Uploading mask...");
         const blob = await canvasToBlob(this.drawingCanvas);
         const file = new File([blob], `mask_${Date.now()}.png`, { type: "image/png" });
         const body = new FormData();
         body.append("image", file);
         // body.append("subfolder", "masks"); // Removed to save in root, easier for backend to find
-        const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-        const data = await resp.json();
-        const maskWidget = this.node.widgets.find(w => w.name === "mask_data");
-        if (maskWidget) {
-            maskWidget.value = data.name;
-        } else {
-            console.warn("[SGUNLoadImage] mask_data widget not found! Creating it now to ensure data persistence.");
-            const w = this.node.addWidget("text", "mask_data", data.name, (v)=>{}, { serialize: true });
-            w.computeSize = () => [0, -4]; 
-            w.type = "hidden";
-            w.draw = () => {};
+        try {
+            const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+            const data = await resp.json();
+            console.log(`[SGUNLoadImage] Mask uploaded successfully: ${data.name}`);
+            const maskWidget = this.node.widgets.find(w => w.name === "mask_data");
+            if (maskWidget) {
+                maskWidget.value = data.name;
+            } else {
+                console.warn("[SGUNLoadImage] mask_data widget not found! Creating it now to ensure data persistence.");
+                const w = this.node.addWidget("text", "mask_data", data.name, (v)=>{}, { serialize: true });
+                w.computeSize = () => [0, -4]; 
+                w.type = "hidden";
+                w.draw = () => {};
+            }
+        } catch (e) {
+            console.error("[SGUNLoadImage] Failed to upload mask:", e);
         }
     }
 }
