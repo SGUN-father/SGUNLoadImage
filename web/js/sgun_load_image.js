@@ -444,6 +444,7 @@ class ImageBrushWidget {
             console.log(`[SGUNLoadImage] Undo: Restoring from history (remaining: ${this.history.length})`);
             const tempImg = new Image();
             tempImg.onload = () => {
+                this.drawingCtx.globalCompositeOperation = "source-over";
                 this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
                 this.drawingCtx.drawImage(tempImg, 0, 0);
                 this.node.setDirtyCanvas(true, true);
