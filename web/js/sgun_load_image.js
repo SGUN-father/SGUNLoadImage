@@ -30,7 +30,7 @@ class ImageBrushWidget {
         // Image & Canvas
         this.img = new Image();
         this.drawingCanvas = document.createElement("canvas");
-        this.drawingCtx = this.drawingCanvas.getContext("2d");
+        this.drawingCtx = this.drawingCanvas.getContext("2d", { willReadFrequently: true });
         
         // Toolbar Config
         this.toolbarHeight = 80;
@@ -46,7 +46,7 @@ class ImageBrushWidget {
         }
 
         if (this.mode === "batch") {
-            return [width, 0];
+            return [width, 40]; // Height for the "Upload ZIP" button in batch mode
         }
 
         // Fix for text overlap: Add top padding
@@ -70,6 +70,31 @@ class ImageBrushWidget {
         this.mode = modeWidget ? modeWidget.value : "single";
 
         if (this.mode === "batch") {
+            const topY = y;
+            this.widgetTopY = topY;
+            this.widgetHeight = 40;
+            this.widgetWidth = widget_width;
+
+            ctx.save();
+            ctx.fillStyle = "#222";
+            ctx.fillRect(0, topY, widget_width, this.widgetHeight);
+
+            // Draw "Upload ZIP" button
+            const btnW = widget_width - this.margin * 2;
+            const btnH = 28;
+            const btnX = this.margin;
+            const btnY = topY + 6;
+
+            ctx.fillStyle = "#4a90e2";
+            ctx.beginPath();
+            ctx.roundRect(btnX, btnY, btnW, btnH, 4);
+            ctx.fill();
+
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 12px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText("Upload ZIP File (Batch)", btnX + btnW / 2, btnY + 18);
+            ctx.restore();
             return;
         }
 
@@ -199,16 +224,22 @@ class ImageBrushWidget {
             
             // Mask Layer
             ctx.globalAlpha = this.brushOpacity;
-            const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = this.drawingCanvas.width;
-            tempCanvas.height = this.drawingCanvas.height;
-            const tempCtx = tempCanvas.getContext("2d");
-            tempCtx.drawImage(this.drawingCanvas, 0, 0);
-            tempCtx.globalCompositeOperation = "source-in";
-            tempCtx.fillStyle = "red";
-            tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
             
-            ctx.drawImage(tempCanvas, dx, dy, dw, dh);
+            // Optimization: Use a small temp canvas for display instead of a full-size one every frame
+            if (!this.displayCanvas) this.displayCanvas = document.createElement("canvas");
+            if (this.displayCanvas.width !== Math.ceil(dw) || this.displayCanvas.height !== Math.ceil(dh)) {
+                this.displayCanvas.width = Math.ceil(dw);
+                this.displayCanvas.height = Math.ceil(dh);
+            }
+            const tCtx = this.displayCanvas.getContext("2d");
+             tCtx.globalCompositeOperation = "source-over"; // Reset to default before drawing mask
+             tCtx.clearRect(0, 0, dw, dh);
+             tCtx.drawImage(this.drawingCanvas, 0, 0, this.drawingCanvas.width, this.drawingCanvas.height, 0, 0, dw, dh);
+             tCtx.globalCompositeOperation = "source-in";
+            tCtx.fillStyle = "red";
+            tCtx.fillRect(0, 0, dw, dh);
+            
+            ctx.drawImage(this.displayCanvas, dx, dy);
             ctx.globalAlpha = 1.0;
             
             ctx.strokeStyle = "#444";
@@ -230,18 +261,29 @@ class ImageBrushWidget {
     }
 
     mouse(event, pos, node) {
-        if (this.mode === "batch") return false;
-        
         const [x, y] = pos;
-        if (this.widgetTopY === undefined || this.widgetHeight === undefined) return false;
+        if (this.widgetTopY === undefined) return false;
         const localY = y - this.widgetTopY;
+
+        if (this.mode === "batch") {
+            if (event.type === "pointerdown" || event.type === "mousedown") {
+                if (localY >= 6 && localY <= 34 && x >= this.margin && x <= (this.widgetWidth || node.size[0]) - this.margin) {
+                    console.log("[SGUNLoadImage] Action: Upload ZIP (Batch Mode)");
+                    this.uploadZip();
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        if (this.widgetHeight === undefined) return false;
         
         // Fix for text overlap: respect top padding
         const topPadding = 20;
         
         // 1. Interacting with Toolbar
         if (localY < this.toolbarHeight + topPadding) {
-            if (event.type === "pointerdown" || event.type === "mousedown") {
+            if (event.type === "pointerdown" || event.type === "mousedown" || event.type === "pointerup" || event.type === "mouseup") {
                 const drawWidth = (this.widgetWidth || node.size[0]) - this.margin * 2;
                 const btnsCount = 6;
                 const btnW = (drawWidth - 10) / btnsCount;
@@ -250,34 +292,38 @@ class ImageBrushWidget {
                 
                 // Button Detection
                 if (localY >= btnY && localY <= btnY + 24 && x >= btnX0 && x <= btnX0 + btnW * btnsCount) {
-                    const idx = Math.floor((x - btnX0) / btnW);
-                    if (idx === 0) { console.log("[SGUNLoadImage] Action: Load Image"); this.uploadImage(); }
-                    else if (idx === 1) { console.log("[SGUNLoadImage] Action: Clear Mask"); this.clear(); }
-                    else if (idx === 2) { console.log("[SGUNLoadImage] Action: Undo"); this.undo(); }
-                    else if (idx === 3) { console.log("[SGUNLoadImage] Tool: Eraser"); this.isEraser = true; this.isFilling = false; }
-                    else if (idx === 4) { console.log("[SGUNLoadImage] Tool: Fill"); this.isEraser = false; this.isFilling = true; }
-                    else if (idx === 5) { console.log("[SGUNLoadImage] Tool: Brush"); this.isEraser = false; this.isFilling = false; }
-                    node.setDirtyCanvas(true, true);
-                    return true;
+                    if (event.type === "pointerdown" || event.type === "mousedown") {
+                        const idx = Math.floor((x - btnX0) / btnW);
+                        if (idx === 0) { console.log("[SGUNLoadImage] Action: Load Image"); this.uploadImage(); }
+                        else if (idx === 1) { console.log("[SGUNLoadImage] Action: Clear Mask"); this.clear(); }
+                        else if (idx === 2) { console.log("[SGUNLoadImage] Action: Undo"); this.undo(); }
+                        else if (idx === 3) { console.log("[SGUNLoadImage] Tool: Eraser"); this.isEraser = true; this.isFilling = false; }
+                        else if (idx === 4) { console.log("[SGUNLoadImage] Tool: Fill"); this.isEraser = false; this.isFilling = true; }
+                        else if (idx === 5) { console.log("[SGUNLoadImage] Tool: Brush"); this.isEraser = false; this.isFilling = false; }
+                        node.setDirtyCanvas(true, true);
+                    }
+                    return true; // Consume event even if it's pointerup
                 }
                 
                 // Slider Detection
                 const sliderY = btnY + 34;
                 const sliderW = (drawWidth - 30) / 2;
                 if (localY >= sliderY && localY <= sliderY + 20) {
-                    if (x < node.size[0] / 2) {
-                        const sBarX = this.margin + 50;
-                        const sBarW = sliderW - 50;
-                        const sizeRatio = Math.max(0, Math.min(1, (x - sBarX) / sBarW));
-                        this.brushSize = Math.max(1, Math.min(200, Math.round(sizeRatio * 200)));
-                    } else {
-                        const oBarX = this.margin + sliderW + 75;
-                        const oBarW = sliderW - 75;
-                        const opacityRatio = Math.max(0, Math.min(1, (x - oBarX) / oBarW));
-                        this.brushOpacity = Math.max(0.1, Math.min(1.0, opacityRatio));
+                    if (event.type === "pointerdown" || event.type === "mousedown") {
+                        if (x < node.size[0] / 2) {
+                            const sBarX = this.margin + 50;
+                            const sBarW = sliderW - 50;
+                            const sizeRatio = Math.max(0, Math.min(1, (x - sBarX) / sBarW));
+                            this.brushSize = Math.max(1, Math.min(200, Math.round(sizeRatio * 200)));
+                        } else {
+                            const oBarX = this.margin + sliderW + 75;
+                            const oBarW = sliderW - 75;
+                            const opacityRatio = Math.max(0, Math.min(1, (x - oBarX) / oBarW));
+                            this.brushOpacity = Math.max(0.1, Math.min(1.0, opacityRatio));
+                        }
+                        node.setDirtyCanvas(true, true);
                     }
-                    node.setDirtyCanvas(true, true);
-                    return true;
+                    return true; // Consume event
                 }
             }
             return false;
@@ -298,7 +344,7 @@ class ImageBrushWidget {
                     if (this.isFilling) {
                         this.saveHistory();
                         this.floodFill(Math.round(imgX), Math.round(imgY));
-                        this.uploadMask();
+                        this.uploadMask("floodfill");
                         node.setDirtyCanvas(true, true);
                     } else {
                         this.isDrawing = true;
@@ -318,7 +364,7 @@ class ImageBrushWidget {
             } else if (event.type === "pointerup" || event.type === "mouseup") {
                 if (this.isDrawing) {
                     this.isDrawing = false;
-                    this.uploadMask();
+                    this.uploadMask("pointerup");
                     node.setDirtyCanvas(true, true);
                     return true;
                 }
@@ -329,6 +375,8 @@ class ImageBrushWidget {
 
     drawAt(x, y, lastPos = null) {
         const ctx = this.drawingCtx;
+        if (!ctx) return;
+
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.lineWidth = this.brushSize;
@@ -337,16 +385,18 @@ class ImageBrushWidget {
             ctx.globalCompositeOperation = "destination-out";
         } else {
             ctx.globalCompositeOperation = "source-over";
-            ctx.strokeStyle = "white"; // Corrected to white for masks
+            ctx.strokeStyle = "white"; 
         }
 
         ctx.beginPath();
-        if (lastPos) {
+        if (lastPos && (Math.abs(lastPos[0] - x) > 0.1 || Math.abs(lastPos[1] - y) > 0.1)) {
             ctx.moveTo(lastPos[0], lastPos[1]);
+            ctx.lineTo(x, y);
         } else {
+            // Draw a single dot
             ctx.moveTo(x, y);
+            ctx.lineTo(x, y);
         }
-        ctx.lineTo(x, y);
         ctx.stroke();
     }
 
@@ -448,7 +498,7 @@ class ImageBrushWidget {
                 this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
                 this.drawingCtx.drawImage(tempImg, 0, 0);
                 this.node.setDirtyCanvas(true, true);
-                this.uploadMask();
+                this.uploadMask("undo");
             };
             tempImg.src = last;
         } else {
@@ -460,7 +510,7 @@ class ImageBrushWidget {
         this.saveHistory();
         this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
         this.node.setDirtyCanvas(true, true);
-        this.uploadMask();
+        this.uploadMask("clear");
     }
 
     uploadImage() {
@@ -483,12 +533,64 @@ class ImageBrushWidget {
         input.click();
     }
 
+    async uploadZip() {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".zip";
+        input.onchange = async () => {
+            const file = input.files[0];
+            if (!file) return;
+            
+            console.log(`[SGUNLoadImage] Preparing to upload ZIP: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+            
+            const body = new FormData();
+            body.append("image", file); // ComfyUI handles any file in /upload/image
+            
+            try {
+                const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+                if (!resp.ok) throw new Error(`Upload failed: ${resp.statusText}`);
+                
+                const data = await resp.json();
+                console.log(`[SGUNLoadImage] ZIP uploaded successfully. Server filename: ${data.name}`);
+                
+                const batchPathWidget = this.node.widgets.find(w => w.name === "batch_path");
+                if (batchPathWidget) {
+                    batchPathWidget.value = data.name;
+                    console.log(`[SGUNLoadImage] batch_path updated to: ${data.name}`);
+                    this.node.setDirtyCanvas(true, true);
+                } else {
+                    console.error("[SGUNLoadImage] batch_path widget not found!");
+                }
+            } catch (e) {
+                console.error("[SGUNLoadImage] ZIP upload failed:", e);
+            }
+        };
+        input.click();
+    }
+
     onImageChanged(name, resetMask = false) {
         if (!name) return;
+
+        // Validation: Only allow image formats for masking
+        const supportedExtensions = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'];
+        const ext = name.split('.').pop().toLowerCase();
+        if (!supportedExtensions.includes(ext)) {
+            console.error(`[SGUNLoadImage] File format .${ext} is not supported for masking/drawing.`);
+            this.img = new Image(); // Reset image object
+            this.canvasRect = null;
+            this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+            this.node.setDirtyCanvas(true, true);
+            return;
+        }
+
         console.log(`[SGUNLoadImage] onImageChanged: ${name}, resetMask: ${resetMask}`);
         
-        // Clear previous state when switching images
+        // Clear previous state and canvasRect to prevent drawing during load
         this.history = [];
+        this.canvasRect = null; 
+        this.isEraser = false; // Reset to brush mode for new image
+        this.isFilling = false;
+        this.isDrawing = false; // Reset drawing state
         this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
         
         const maskWidget = this.node.widgets.find(w => w.name === "mask_data");
@@ -496,6 +598,7 @@ class ImageBrushWidget {
         // Only clear mask data if explicitly requested (e.g. user uploaded new image)
         if (resetMask) {
             if (maskWidget) {
+                console.log("[SGUNLoadImage] Resetting mask_data widget.");
                 maskWidget.value = "";
             }
             // Also ensure we don't load a mask in the onload callback
@@ -511,40 +614,37 @@ class ImageBrushWidget {
         };
         this.img.onload = () => {
             console.log(`[SGUNLoadImage] Image loaded: ${this.img.width}x${this.img.height}`);
-            // Reset canvas size to match new image
-            this.drawingCanvas.width = this.img.width;
-            this.drawingCanvas.height = this.img.height;
+            
+            // Safety check for canvas size limits
+            const maxArea = 16384 * 16384; // Very generous limit
+            if (this.img.width * this.img.height > maxArea) {
+                console.warn(`[SGUNLoadImage] Image is extremely large (${this.img.width}x${this.img.height}). Canvas might fail.`);
+            }
+
+            // Reset canvas size to match new image. Note: this also clears the canvas.
+            if (this.drawingCanvas.width !== this.img.width || this.drawingCanvas.height !== this.img.height) {
+                console.log(`[SGUNLoadImage] Resizing drawing canvas from ${this.drawingCanvas.width}x${this.drawingCanvas.height} to ${this.img.width}x${this.img.height}`);
+                this.drawingCanvas.width = this.img.width;
+                this.drawingCanvas.height = this.img.height;
+                
+                // Re-get context and reset properties after resize just in case
+                this.drawingCtx = this.drawingCanvas.getContext("2d", { willReadFrequently: true });
+                this.drawingCtx.lineCap = "round";
+                this.drawingCtx.lineJoin = "round";
+                
+                // Ensure it's bone dry after resize to avoid ghost pixels triggering upload
+                this.drawingCtx.clearRect(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+            }
             
             // Only load mask if it exists AND we haven't just cleared it for a new image.
-            // But wait, if we are loading a workflow, mask_data might have a value we WANT to load.
-            // How to distinguish "User changed image via upload" vs "Workflow loaded"?
-            // For now, if mask_data is empty (which we just set), it won't load, which is correct for new image.
-            // If we are loading from workflow, onNodeCreated -> onImageChanged happens, but mask_data might be populated.
-            
-            // Actually, we should check if mask_data matches the current image or if it's just a leftover.
-            // Since we can't easily link them, the safest bet for "User changed image" is to clear it.
-            // But for "Workflow Load", we want to keep it.
-            // The `imageWidget.callback` triggers this. When loading a workflow, callback might trigger.
-            
-            // Let's rely on the fact that we just cleared maskWidget.value above.
-            // So if this was triggered by user interaction (upload), mask is gone.
-            // If it's a workflow load, `onNodeCreated` runs.
-            // Wait, `onNodeCreated` runs `brushWidget.onImageChanged(imageWidget.value)`.
-            // If I clear it here, I lose saved masks!
-            
-            // REVISION: Only clear mask if the image NAME has actually changed?
-            // But `onImageChanged` is called with the new name.
-            
-            // Let's check if we should load the mask.
             if (!this.pendingMaskReset && maskWidget && maskWidget.value) {
+                 console.log(`[SGUNLoadImage] Found existing mask data: ${maskWidget.value}, loading...`);
                  this.loadMask(maskWidget.value);
             }
-            this.pendingMaskReset = false; // Reset for next time
+            this.pendingMaskReset = false; 
             
             // Auto-resize node to fit image
             if (this.node) {
-                // Use computeSize to let the node calculate its total required size
-                // We trust node.computeSize() now because we fixed imageWidget.computeSize
                 this.node.setSize(this.node.computeSize());
             }
             
@@ -567,30 +667,71 @@ class ImageBrushWidget {
         maskImg.src = api.apiURL(`/view?filename=${encodeURIComponent(name)}&type=input&subfolder=masks&t=${Date.now()}`);
     }
 
-    async uploadMask() {
-        if (!this.drawingCanvas.width) return;
-        console.log("[SGUNLoadImage] Uploading mask...");
-        const blob = await canvasToBlob(this.drawingCanvas);
-        const file = new File([blob], `mask_${Date.now()}.png`, { type: "image/png" });
-        const body = new FormData();
-        body.append("image", file);
-        // body.append("subfolder", "masks"); // Removed to save in root, easier for backend to find
+    async uploadMask(reason = "unknown") {
+        if (!this.drawingCanvas.width || !this.drawingCanvas.height) return;
+        
+        // Prevent concurrent uploads
+        if (this._isUploading) {
+            console.log(`[SGUNLoadImage] Upload already in progress. Skipping call from: ${reason}`);
+            this._pendingUpload = true; // Mark that we need another upload after current one finishes
+            return;
+        }
+        this._isUploading = true;
+
         try {
+            // Fast check: Is the canvas empty?
+            const ctx = this.drawingCtx;
+            const imageData = ctx.getImageData(0, 0, this.drawingCanvas.width, this.drawingCanvas.height);
+            const data = imageData.data;
+            let isEmpty = true;
+            
+            // Check for non-empty pixels. We use a small threshold to ignore compression artifacts or ghost pixels
+            for (let i = 3; i < data.length; i += 4) {
+                if (data[i] > 2) { // Threshold > 2 to ignore faint ghost pixels
+                    isEmpty = false;
+                    break;
+                }
+            }
+
+            if (isEmpty) {
+                console.log(`[SGUNLoadImage] Mask is empty (caller: ${reason}). Skipping upload.`);
+                const maskWidget = this.node.widgets.find(w => w.name === "mask_data");
+                if (maskWidget && maskWidget.value !== "") {
+                    console.log("[SGUNLoadImage] Clearing mask_data because canvas is now empty.");
+                    maskWidget.value = "";
+                }
+                return;
+            }
+
+            console.log(`[SGUNLoadImage] Uploading mask (${this.drawingCanvas.width}x${this.drawingCanvas.height}) from: ${reason}...`);
+            const blob = await canvasToBlob(this.drawingCanvas);
+            const filename = `mask_${Date.now()}.png`;
+            const file = new File([blob], filename, { type: "image/png" });
+            const body = new FormData();
+            body.append("image", file);
+            
             const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-            const data = await resp.json();
-            console.log(`[SGUNLoadImage] Mask uploaded successfully: ${data.name}`);
+            const dataResp = await resp.json();
+            console.log(`[SGUNLoadImage] Mask uploaded successfully (${reason}): ${dataResp.name}`);
             const maskWidget = this.node.widgets.find(w => w.name === "mask_data");
             if (maskWidget) {
-                maskWidget.value = data.name;
+                maskWidget.value = dataResp.name;
             } else {
                 console.warn("[SGUNLoadImage] mask_data widget not found! Creating it now to ensure data persistence.");
-                const w = this.node.addWidget("text", "mask_data", data.name, (v)=>{}, { serialize: true });
+                const w = this.node.addWidget("text", "mask_data", dataResp.name, (v)=>{}, { serialize: true });
                 w.computeSize = () => [0, -4]; 
                 w.type = "hidden";
                 w.draw = () => {};
             }
         } catch (e) {
-            console.error("[SGUNLoadImage] Failed to upload mask:", e);
+            console.error(`[SGUNLoadImage] Failed to upload mask (caller: ${reason}):`, e);
+        } finally {
+            this._isUploading = false;
+            // If another upload was requested while we were busy, trigger it now (once)
+            if (this._pendingUpload) {
+                this._pendingUpload = false;
+                setTimeout(() => this.uploadMask("queued"), 100);
+            }
         }
     }
 }
@@ -628,7 +769,7 @@ app.registerExtension({
 
             // 1. Cleanup Redundant Widgets (ComfyUI internal preview)
             setTimeout(() => {
-                const keep = ["mode", "image", "batch_path", "width", "height", "upscale_method", "keep_proportion", "crop_position", "divisible_by", "mask_data"];
+                const keep = ["mode", "image", "batch_path", "width", "height", "upscale_method", "keep_proportion", "crop_position", "divisible_by", "mask_data", "resize_short_side"];
                 this.widgets = this.widgets.filter(w => keep.includes(w.name));
                 
                 // 2. Add our custom ImageBrushWidget
@@ -644,6 +785,12 @@ app.registerExtension({
                 const imageWidgetType = imageWidget.type;
                 const batchPathWidgetType = batchPathWidget.type;
                 
+                // 显式确保新控件可见
+                const resizeShortSideWidget = this.widgets.find(w => w.name === "resize_short_side");
+                if (resizeShortSideWidget) {
+                    resizeShortSideWidget.type = "number"; // 确保它是数字输入类型
+                }
+
                 const updateVisibility = () => {
                     const isBatch = modeWidget.value === "batch";
                     brushWidget.mode = modeWidget.value; // Sync mode to brush widget
@@ -669,7 +816,10 @@ app.registerExtension({
 
                 // 4. Initial Load & Setup for Image Widget
                 if (imageWidget) {
-                    imageWidget.computeSize = () => [0, 26]; 
+                    imageWidget.computeSize = (w) => {
+                        if (imageWidget.type === "hidden") return [0, -4];
+                        return [w, 26];
+                    };
                     const originalCallback = imageWidget.callback;
                     imageWidget.callback = (v) => {
                         if (originalCallback) originalCallback.apply(imageWidget, [v]);
@@ -682,6 +832,13 @@ app.registerExtension({
                         this.images = null;
                         brushWidget.onImageChanged(imageWidget.value, false);
                     }
+                }
+
+                if (batchPathWidget) {
+                    batchPathWidget.computeSize = (w) => {
+                        if (batchPathWidget.type === "hidden") return [0, -4];
+                        return [w, 26];
+                    };
                 }
 
                 // 5. Hide mask_data widget
