@@ -14,6 +14,7 @@
   - **自动对齐**：批量模式自动统一图片尺寸，防止张量合并报错。
   - **短边缩放**：支持按短边像素等比缩放 (`resize_short_side`)。
 - 🖥️ **动态 UI**：根据模式自动隐藏/显示相关组件，保持界面清爽。
+<img width="2344" height="1314" alt="微信图片_20260211164225_17707_1072" src="https://github.com/user-attachments/assets/55e47b0b-4e05-4429-8c28-6db6e045b5f1" />
 
 ### 安装与使用
 1. `git clone` 仓库至 `custom_nodes` 目录。
@@ -35,6 +36,7 @@
   - **Auto-Alignment**: Uniforms image sizes in batch mode to prevent tensor errors.
   - **Short-Side Scaling**: Proportional scaling based on target short-side pixels.
 - 🖥️ **Dynamic UI**: Automatically hides/shows widgets based on mode to keep UI clean.
+<img width="2344" height="1314" alt="微信图片_20260211164225_17707_1072" src="https://github.com/user-attachments/assets/541bd4ce-b0c3-48da-9b60-8158c67906b6" />
 
 ### Installation & Usage
 1. `git clone` the repo into your `custom_nodes` folder.
